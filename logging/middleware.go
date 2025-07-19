@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-
-	otrace "go.opentelemetry.io/otel/trace"
 )
 
 type wrappedWriter struct {
@@ -64,15 +62,12 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		ctx := r.Context()
-		sc := otrace.SpanContextFromContext(ctx)
 		attrs := []slog.Attr{
 			slog.Int("http.status_code", ww.status),
 			slog.String("http.route", route),
 			slog.String("http.path", r.URL.Path),
 			slog.String("http.method", r.Method),
 			slog.Any("duration", time.Since(start)),
-			slog.String("trace.trace_id", sc.TraceID().String()),
-			slog.String("trace.span_id", sc.SpanID().String()),
 		}
 
 		for _, fn := range m.extractors {
