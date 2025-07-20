@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+
 	"jsocol.io/middleware/deadline"
 )
 

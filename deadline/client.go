@@ -33,6 +33,7 @@ func (t *Transport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 		r.Header.Add(t.headerName, deadline.Format(time.RFC3339Nano))
 	}
+
 	return t.RoundTripper.RoundTrip(r)
 }
 
