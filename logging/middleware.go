@@ -29,17 +29,32 @@ func (w *wrappedWriter) Write(data []byte) (int, error) {
 
 type ContextExtractor func(context.Context) []slog.Attr
 
+type Leveler func(status int) slog.Level
+
+var defaultLeveler Leveler = func(status int) slog.Level {
+	if status >= 500 {
+		return slog.LevelError
+	}
+	return slog.LevelInfo
+}
+
+var _ http.Handler = &Middleware{}
+
 type Middleware struct {
-	target         *http.ServeMux
+	target         http.Handler
 	logger         *slog.Logger
+	leveler        Leveler
+	filteredPaths  map[string]struct{}
 	filteredRoutes map[string]struct{}
 	extractors     []ContextExtractor
 }
 
-func Wrap(h *http.ServeMux, opts ...Option) http.Handler {
+func Wrap(h http.Handler, opts ...Option) http.Handler {
 	m := &Middleware{
 		target:         h,
+		filteredPaths:  make(map[string]struct{}),
 		filteredRoutes: make(map[string]struct{}),
+		leveler:        defaultLeveler,
 	}
 
 	for _, o := range opts {
@@ -57,19 +72,23 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ResponseWriter: w,
 	}
 	start := time.Now()
+	var route string
+
 	defer func() {
-		_, route := m.target.Handler(r)
-		if m.filterRoute(route) {
+		if m.filterPath(r.URL.Path) || (route != "" && m.filterRoute(route)) {
 			return
 		}
 
 		ctx := r.Context()
 		attrs := []slog.Attr{
 			slog.Int("http.status_code", ww.status),
-			slog.String("http.route", route),
 			slog.String("http.path", r.URL.Path),
 			slog.String("http.method", r.Method),
 			slog.Any("duration", time.Since(start)),
+		}
+
+		if route != "" {
+			attrs = append(attrs, slog.String("http.route", route))
 		}
 
 		for _, fn := range m.extractors {
@@ -78,12 +97,24 @@ func (m *Middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		m.logger.LogAttrs(
 			ctx,
-			slog.LevelInfo,
+			m.leveler(ww.status),
 			fmt.Sprintf("%s %s [%d]", r.Method, r.URL.Path, ww.status),
 			attrs...,
 		)
 	}()
-	m.target.ServeHTTP(ww, r)
+
+	if h, ok := m.target.(*http.ServeMux); ok {
+		handler, pattern := h.Handler(r)
+		route = pattern
+		handler.ServeHTTP(ww, r)
+	} else {
+		m.target.ServeHTTP(ww, r)
+	}
+}
+
+func (m *Middleware) filterPath(path string) bool {
+	_, ok := m.filteredPaths[path]
+	return ok
 }
 
 func (m *Middleware) filterRoute(route string) bool {
@@ -99,6 +130,14 @@ func WithLogger(l *slog.Logger) Option {
 	}
 }
 
+func WithPathFilter(paths ...string) Option {
+	return func(mw *Middleware) {
+		for _, path := range paths {
+			mw.filteredPaths[path] = struct{}{}
+		}
+	}
+}
+
 func WithRouteFilter(routes ...string) Option {
 	return func(mw *Middleware) {
 		for _, route := range routes {
@@ -110,5 +149,11 @@ func WithRouteFilter(routes ...string) Option {
 func WithContextExtractors(fns ...ContextExtractor) Option {
 	return func(mw *Middleware) {
 		mw.extractors = append(mw.extractors, fns...)
+	}
+}
+
+func WithLeveler(fn Leveler) Option {
+	return func(mw *Middleware) {
+		mw.leveler = fn
 	}
 }
