@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+var _ http.ResponseWriter = &wrappedWriter{}
+
 type wrappedWriter struct {
 	http.ResponseWriter
 	status int
