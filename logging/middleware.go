@@ -1,3 +1,7 @@
+// Package logging implements structured access logging for [http.Handler]
+// servers. The logs are written using a [slog.Logger] and so can be formatted
+// by a [slog.Handler]. Additional information can be added to logs via
+// [ContextExtractor] functions.
 package logging
 
 import (
@@ -27,8 +31,14 @@ func (w *wrappedWriter) Write(data []byte) (int, error) {
 	return w.ResponseWriter.Write(data)
 }
 
+// ContextExtractor functions are used to pull additional attributes out of a
+// [context.Context] instance. See
+// [jsocol.io/middleware/logging/pkg/otelextractor.New] for an example.
 type ContextExtractor func(context.Context) []slog.Attr
 
+// A Leveler deteremines slog.Level based on an HTTP status code. The default
+// Leveler returns [slog.LevelInfo] for all statuses below 500, and
+// [slog.LevelError] for statuses >= 500.
 type Leveler func(status int) slog.Level
 
 var defaultLeveler Leveler = func(status int) slog.Level {
@@ -40,6 +50,9 @@ var defaultLeveler Leveler = func(status int) slog.Level {
 
 var _ http.Handler = &Middleware{}
 
+// Middleware is an [http.Handler] that records access logs for every request
+// handled by the wrapped [http.Handler]. See the [Option] functions for more
+// configuration options.
 type Middleware struct {
 	target         http.Handler
 	logger         *slog.Logger
@@ -49,21 +62,26 @@ type Middleware struct {
 	extractors     []ContextExtractor
 }
 
+// Wrap returns a new [http.Handler] that is wrapped in a loggin [Middleware]
+// struct and will record access logs automatically. If Wrap is given an
+// [*http.ServeMux], it will attempt to extract the matching route as well as
+// the request path.
 func Wrap(h http.Handler, opts ...Option) http.Handler {
 	m := &Middleware{
 		target:         h,
+		logger:         slog.Default(),
 		filteredPaths:  make(map[string]struct{}),
 		filteredRoutes: make(map[string]struct{}),
-		leveler:        defaultLeveler,
 	}
 
 	for _, o := range opts {
 		o(m)
 	}
 
-	if m.logger == nil {
-		m.logger = slog.Default()
+	if m.leveler == nil {
+		m.leveler = defaultLeveler
 	}
+
 	return m
 }
 
@@ -122,14 +140,19 @@ func (m *Middleware) filterRoute(route string) bool {
 	return ok
 }
 
+// Options configure a [Middleware] instance.
 type Option func(mw *Middleware)
 
+// WithLogger specifies a particular [*slog.Logger] for the [Middleware] to
+// use. Otherwise, [slog.Default] is used.
 func WithLogger(l *slog.Logger) Option {
 	return func(mw *Middleware) {
 		mw.logger = l
 	}
 }
 
+// WithPathFilter excludes certain paths from access logging, e.g. to avoid
+// logging internal health checks or favicon requests.
 func WithPathFilter(paths ...string) Option {
 	return func(mw *Middleware) {
 		for _, path := range paths {
@@ -138,6 +161,9 @@ func WithPathFilter(paths ...string) Option {
 	}
 }
 
+// WithRouteFilter excludes certain route patterns from an [http.ServeMux] from
+// access logging. Uses [http.ServeMux.Handler] to determine the pattern, so
+// the ignored routes should match those patterns.
 func WithRouteFilter(routes ...string) Option {
 	return func(mw *Middleware) {
 		for _, route := range routes {
@@ -146,12 +172,16 @@ func WithRouteFilter(routes ...string) Option {
 	}
 }
 
+// WithContextExtractors adds [ContextExtractor] functions that attempt to
+// gather additional information from the [http.Request.Context] to add to logs
+// as [slog.Attr].
 func WithContextExtractors(fns ...ContextExtractor) Option {
 	return func(mw *Middleware) {
 		mw.extractors = append(mw.extractors, fns...)
 	}
 }
 
+// WithLeveler specifies an alternative [Leveler].
 func WithLeveler(fn Leveler) Option {
 	return func(mw *Middleware) {
 		mw.leveler = fn

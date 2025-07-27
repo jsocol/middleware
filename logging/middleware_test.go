@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"testing"
 	"time"
@@ -226,37 +227,124 @@ func TestMiddleware_WithLeveler(t *testing.T) {
 			mw := logging.Wrap(mux, logging.WithLogger(logger), logging.WithLeveler(leveler))
 
 			mw.ServeHTTP(rr, r)
+
+			assert.Len(t, th.records, 1)
+			assert.Equal(t, expectedLevel, th.records[0].Level)
 		}
 	}
 
 	testCases := []struct {
-		name      string
-		filter    []string
-		path      string
-		shouldLog bool
+		name    string
+		status  int
+		level   slog.Level
+		leveler logging.Leveler
 	}{
 		{
-			name:      "ignores by old style route",
-			filter:    []string{"/healthz"},
-			path:      "/healthz",
-			shouldLog: false,
+			name:   "default leveler is info for 2xx",
+			status: http.StatusNoContent,
+			level:  slog.LevelInfo,
 		},
 		{
-			name:      "ignores by route with verb",
-			filter:    []string{"GET /foo/{thing}"},
-			path:      "/foo/bar",
-			shouldLog: false,
+			name:   "default leveler is info for 3xx",
+			status: http.StatusSeeOther,
+			level:  slog.LevelInfo,
 		},
 		{
-			name:      "does not ignore non-matching verb",
-			filter:    []string{"POST /foo/{thing}"},
-			path:      "/foo/bar",
-			shouldLog: true,
+			name:   "default leveler is info for 4xx",
+			status: http.StatusConflict,
+			level:  slog.LevelInfo,
+		},
+		{
+			name:   "default leveler is error for 5xx",
+			status: http.StatusBadGateway,
+			level:  slog.LevelError,
+		},
+		{
+			name:   "custom leveler is always warn",
+			status: http.StatusContinue,
+			level:  slog.LevelWarn,
+			leveler: func(_ int) slog.Level {
+				return slog.LevelWarn
+			},
 		},
 	}
 
 	t.Parallel()
 	for _, tc := range testCases {
-		t.Run(tc.name, f(tc.filter, tc.path, tc.shouldLog))
+		t.Run(tc.name, f(tc.leveler, tc.status, tc.level))
 	}
+}
+
+func ExampleWithPathFilter() {
+	// Create a new [http.Handler] with a healthcheck endpoint.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthcheck", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("GET /", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("you did it!"))
+	})
+
+	// A logger that ignores time
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey || a.Key == "duration" {
+				return slog.Attr{}
+			}
+			return a
+		},
+	}))
+
+	// Ignore requests to /healthcheck
+	handler := logging.Wrap(mux, logging.WithPathFilter("/healthcheck"), logging.WithLogger(logger))
+
+	req := httptest.NewRequest(http.MethodGet, "/healthcheck", nil)
+	resp := httptest.NewRecorder()
+
+	// No log is recorded
+	handler.ServeHTTP(resp, req)
+
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+
+	// A log is recorded
+	handler.ServeHTTP(resp, req)
+
+	// Output:
+	// level=INFO msg="GET / [200]" http.status_code=200 http.path=/ http.method=GET http.route="GET /"
+}
+
+func ExampleWithRouteFilter() {
+	// Create a new [http.Handler] with a healthcheck endpoint.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthcheck", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	// A logger that ignores time
+	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey || a.Key == "duration" {
+				return slog.Attr{}
+			}
+			return a
+		},
+	}))
+
+	// Ignore requests to /healthcheck
+	handler := logging.Wrap(mux, logging.WithRouteFilter("GET /healthcheck"), logging.WithLogger(logger))
+
+	req := httptest.NewRequest(http.MethodGet, "/healthcheck", nil)
+	resp := httptest.NewRecorder()
+
+	// No log is recorded
+	handler.ServeHTTP(resp, req)
+
+	req = httptest.NewRequest(http.MethodPost, "/healthcheck", nil)
+
+	// A log is recorded
+	handler.ServeHTTP(resp, req)
+
+	// Output:
+	// level=INFO msg="POST /healthcheck [405]" http.status_code=405 http.path=/healthcheck http.method=POST
 }
