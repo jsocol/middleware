@@ -6,6 +6,7 @@ for mod in $modules; do
     pkg=$(dirname "$mod")
     echo "testing $(basename "$pkg")"
     cd "$pkg" || exit 1
+    go get ./...
     go test -v ./...
     cd - || exit 1
 done
